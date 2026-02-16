@@ -1,0 +1,11 @@
+symbol,company_name,sector,is_active
+AAPL,Apple Inc.,Technology,true
+MSFT,Microsoft Corporation,Technology,true
+GOOGL,Alphabet Inc.,Technology,true
+AMZN,Amazon.com Inc.,Consumer Cyclical,true
+TSLA,Tesla Inc.,Automotive,true
+META,Meta Platforms Inc.,Technology,true
+NVDA,NVIDIA Corporation,Technology,true
+JPM,JPMorgan Chase & Co.,Financial Services,true
+BAC,Bank of America Corp.,Financial Services,true
+OLDCO,Old Company Inc.,Industrial,false
