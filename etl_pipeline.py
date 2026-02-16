@@ -6,22 +6,33 @@ import logging
 import json
 import yaml
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, abs as spark_abs, when, concat_ws, lit, regexp_replace, round as spark_round, date_format, to_timestamp, struct, trim
+from pyspark.sql.functions import (
+    col,
+    abs as spark_abs,
+    when,
+    lit,
+    round as spark_round,
+    date_format,
+    to_timestamp,
+    struct,
+    array,
+    array_append,
+    array_join,
+    size,
+)
 
 
 class ETLPipeline:
-    # Main ETL Pipeline class for processing trade data
-    
-    def __init__(self, config_path: str = "config.yaml"):
-        # Initialize the ETL pipeline with configuration
+    """Main ETL Pipeline class for processing trade data."""
 
-        with open(config_path, 'r') as f:
+    def __init__(self, config_path: str = "config.yaml"):
+        """Initialize the ETL pipeline with configuration."""
+        with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
-        
-        # Set up logging
+
         logging.basicConfig(
-            level=getattr(logging, self.config['logging']['level']),
-            format=self.config['logging']['format']
+            level=getattr(logging, self.config["logging"]["level"]),
+            format=self.config["logging"]["format"],
         )
         self.logger = logging.getLogger(__name__)
         
@@ -36,44 +47,49 @@ class ETLPipeline:
             .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
             .getOrCreate()
         )
-        
+
         self.metrics = {
             "processed_trades": 0,
             "successful_trades": 0,
+            "discrepancy_trades": 0,
             "cancelled_trades": 0,
             "duplicate_trades": 0,
             "invalid_trades": 0,
         }
-        
-        self.logger.info("ETL Pipeline initialized")
-    
-    def extract(self):   
-        # Extract data from CSV files
 
+        self.logger.info("ETL Pipeline initialized")
+
+    def extract(self):
+        """Extract data from CSV files."""
         self.logger.info("Starting data extraction...")
-        
-        # Read CSV files
-        trades_df = self.spark.read \
-            .option("header", "true") \
+
+        trades_df = (
+            self.spark.read
+            .option("header", "true")
             .csv("trades.csv")
-        
-        counterparty_df = self.spark.read \
-            .option("header", "true") \
-            .csv("counterparty_fills.csv") \
-            .select( \
-                col("external_ref_id").alias("external_ref_id"), \
-                col("our_trade_id").alias("our_trade_id"), \
-                col("timestamp").alias("counterparty_timestamp"), \
-                col("symbol").alias("counterparty_symbol"), \
-                col("quantity").alias("counterparty_quantity"), \
-                col("price").alias("counterparty_price"), \
-                col("counterparty_id").alias("counterparty_id") \
+        )
+
+        counterparty_df = (
+            self.spark.read
+            .option("header", "true")
+            .csv("counterparty_fills.csv")
+            .select(
+                col("external_ref_id").alias("external_ref_id"),
+                col("our_trade_id").alias("our_trade_id"),
+                col("timestamp").alias("counterparty_timestamp"),
+                col("symbol").alias("counterparty_symbol"),
+                col("quantity").alias("counterparty_quantity"),
+                col("price").alias("counterparty_price"),
+                col("counterparty_id").alias("counterparty_id"),
             )
-        
-        symbols_df = self.spark.read \
-            .option("header", "true") \
+        )
+
+        symbols_df = (
+            self.spark.read
+            .option("header", "true")
             .csv("symbols_reference.csv")
-        
+        )
+
         # Collect and log initial counts
         trades_count = trades_df.count()
         counterparty_count = counterparty_df.count()
@@ -83,11 +99,11 @@ class ETLPipeline:
         self.logger.info(f"Extracted {trades_count} trades")
         self.logger.info(f"Extracted {counterparty_count} counterparty fills")
         self.logger.info(f"Extracted {symbols_count} reference symbols")
-        
+
         return trades_df, counterparty_df, symbols_df
 
     def filter_duplicate_and_cancelled(self, trades_df):
-        # Track count of enriched_trades_df; update as we filter and validate.
+        """Filter duplicate and cancelled trades; update metrics."""
         filtered_trades_df = trades_df
         current_count = self.metrics["processed_trades"]
 
@@ -105,7 +121,7 @@ class ETLPipeline:
             filtered_trades_df = without_duplicate_trades_df
             self.logger.info(f"Removed {duplicate_count} duplicated trades")
             current_count -= duplicate_count
-        
+
         # Isolate cancelled trades.
         without_cancelled_trades_df = filtered_trades_df.filter(col("trade_status") != "CANCELLED")
         without_cancelled_trades_count = without_cancelled_trades_df.count()
@@ -120,21 +136,21 @@ class ETLPipeline:
             filtered_trades_df = without_cancelled_trades_df
             self.logger.info(f"Removed {cancelled_count} cancelled trades")
             current_count -= cancelled_count
-        
+
         return filtered_trades_df, current_count
 
     def validate_trades(self, enriched_trades_df):
         """
-        Validate enriched trades:
-        - Symbol must exist in reference data and be active
-        - Trade quantity and price must be positive and castable to numeric types
-        - Compute basic discrepancy flags vs counterparty fills
+        Validate enriched trades.
+
+        - Symbol must exist in reference data and be active.
+        - Trade quantity and price must be positive and castable to numeric types.
+        - Identify discrepancies (price/quantity/symbol) vs counterparty fills.
         """
-        
         self.logger.info("Validating enriched trades...")
 
         # Cast numeric fields for validation and discrepancy checks
-        df = (
+        trades_df = (
             enriched_trades_df
             .withColumn("trade_quantity_int", col("quantity").cast("int"))
             .withColumn("trade_price_dec", col("price").cast("double"))
@@ -142,96 +158,71 @@ class ETLPipeline:
             .withColumn("cp_price_dec", col("counterparty_price").cast("double"))
         )
 
-        # Identify specific validation failures
-        symbol_invalid = (
-            col("company_name").isNull()
-            | (
-                (col("is_active") != "true")
-                & (col("is_active") != True)
-            )
-        )
-        
-        quantity_invalid = (
-            col("trade_quantity_int").isNull()
-            | (col("trade_quantity_int") <= 0)
-        )
-        
-        price_invalid = (
-            col("trade_price_dec").isNull()
-            | (col("trade_price_dec") <= 0)
+        trades_df = (
+            trades_df
+            .withColumn("exception_types", array())
+            .withColumn("exception_details", array())
         )
 
-        quantity_mismatch = (
-            col("trade_price_dec").isNull()
-            | (col("trade_price_dec") <= 0)
+        trades_df = trades_df.withColumn(
+            "exception_types",
+            when(
+                col("company_name").isNotNull()
+                & ((col("is_active") == "true") | (col("is_active") == True)),
+                col("exception_types"),
+            ).otherwise(array_append(col("exception_types"), lit("SYMBOL_INVALID"))),
+        ).withColumn(
+            "exception_types",
+            when(
+                col("trade_quantity_int").isNotNull() & (col("trade_quantity_int") > 0),
+                col("exception_types"),
+            ).otherwise(array_append(col("exception_types"), lit("QUANTITY_INVALID"))),
+        ).withColumn(
+            "exception_types",
+            when(
+                col("trade_price_dec").isNotNull() & (col("trade_price_dec") > 0),
+                col("exception_types"),
+            ).otherwise(array_append(col("exception_types"), lit("PRICE_INVALID"))),
         )
 
-        # Build exception_type and details columns
-        # Symbol validation
-        symbol_exception_type = when(symbol_invalid, lit("INVALID_SYMBOL")).otherwise(lit(""))
-        symbol_details = (
+        trades_df = trades_df.withColumn(
+            "exception_details",
             when(
                 col("company_name").isNull(),
-                lit("Symbol not found in reference data")
-            ).when(
-                (col("is_active") != "true") & (col("is_active") != True),
-                lit("Symbol is inactive")
-            ).otherwise(lit(""))
-        )
-        
-        # Quantity validation
-        quantity_exception_type = when(quantity_invalid, lit("INVALID_QUANTITY")).otherwise(lit(""))
-        quantity_details = (
-            when(
-                col("trade_quantity_int").isNull(),
-                lit("Quantity is null or not numeric")
-            ).when(
-                col("trade_quantity_int") <= 0,
-                lit("Quantity must be positive")
-            ).otherwise(lit(""))
-        )
-        
-        # Price validation
-        price_exception_type = when(price_invalid, lit("INVALID_PRICE")).otherwise(lit(""))
-        price_details = (
-            when(
-                col("trade_price_dec").isNull(),
-                lit("Price is null or not numeric")
-            ).when(
-                col("trade_price_dec") <= 0,
-                lit("Price must be positive")
-            ).otherwise(lit(""))
-        )
-
-        # Combine exception types and details, then clean up leading/trailing separators
-        df = df.withColumn(
-            "exception_type",
-            trim(
-                regexp_replace(
-                    regexp_replace(
-                        concat_ws(",", symbol_exception_type, quantity_exception_type, price_exception_type),
-                        "^[,\\s]+|[,\\s]+$", ""
-                    ),
-                    ",,+", ","
-                )
-            )
+                array_append(col("exception_details"), lit("Symbol not found in reference data")),
+            ).otherwise(col("exception_details")),
         ).withColumn(
-            "details",
-            trim(
-                regexp_replace(
-                    regexp_replace(
-                        concat_ws("; ", symbol_details, quantity_details, price_details),
-                        "^[;,\\s]+|[;,\\s]+$", ""
-                    ),
-                    "; +;+", "; "
-                )
-            )
+            "exception_details",
+            when(
+                (col("is_active") == "false") | (col("is_active") == False),
+                array_append(col("exception_details"), lit("Symbol is not active")),
+            ).otherwise(col("exception_details")),
+        ).withColumn(
+            "exception_details",
+            when(
+                col("trade_quantity_int").isNull() | (col("trade_quantity_int") <= 0),
+                array_append(
+                    col("exception_details"),
+                    lit("Quantity is null or non-integer/non-positive"),
+                ),
+            ).otherwise(col("exception_details")),
+        ).withColumn(
+            "exception_details",
+            when(
+                col("trade_price_dec").isNull() | (col("trade_price_dec") <= 0),
+                array_append(
+                    col("exception_details"),
+                    lit("Price is null or non-numeric/non-positive"),
+                ),
+            ).otherwise(col("exception_details")),
         )
 
         # Counterparty confirmation and price / quantity discrepancies
-        threshold = float(self.config["validation"]["price_discrepancy_threshold_exclusive"])
+        threshold = float(
+            self.config["validation"]["price_discrepancy_threshold_exclusive"]
+        )
 
-        df = df.withColumn(
+        trades_df = trades_df.withColumn(
             "counterparty_confirmed",
             col("cp_quantity_int").isNotNull() | col("cp_price_dec").isNotNull(),
         ).withColumn(
@@ -239,66 +230,97 @@ class ETLPipeline:
             (
                 col("counterparty_confirmed")
                 & (
-                    (col("cp_quantity_int").isNotNull()
-                     & (col("cp_quantity_int") != col("trade_quantity_int")))
+                    (
+                        col("cp_quantity_int").isNotNull()
+                        & (col("cp_quantity_int") != col("trade_quantity_int"))
+                    )
                     | (
                         col("cp_price_dec").isNotNull()
-                        & (spark_abs(col("cp_price_dec") - col("trade_price_dec")) > threshold)
+                        & (
+                            spark_abs(col("cp_price_dec") - col("trade_price_dec"))
+                            > threshold
+                        )
+                    )
+                    | (
+                        col("counterparty_symbol").isNotNull()
+                        & (col("counterparty_symbol") != col("symbol"))
                     )
                 )
             ),
         )
 
-        # Overall validity: symbol and trade numerics must be valid
-        is_valid = ~symbol_invalid & ~quantity_invalid & ~price_invalid
+        trades_df = (
+            trades_df
+            .withColumn("is_valid", size(col("exception_types")) == 0)
+            .withColumn(
+                "exception_type",
+                when(
+                    col("is_valid"),
+                    lit(None),
+                ).otherwise(array_join(col("exception_types"), ", ")),
+            )
+            .withColumn(
+                "details",
+                when(
+                    col("is_valid"),
+                    lit(None),
+                ).otherwise(array_join(col("exception_details"), "; ")),
+            )
+        )
 
-        valid_trades_df = df.filter(is_valid)
-        invalid_trades_df = df.filter(~is_valid)
+        valid_trades_df = trades_df.filter(col("is_valid"))
+        invalid_trades_df = trades_df.filter(~col("is_valid"))
+        discrepancy_trades_df = valid_trades_df.filter(col("discrepancy_flag"))
 
         valid_count = valid_trades_df.count()
         invalid_count = invalid_trades_df.count()
+        discrepancy_count = discrepancy_trades_df.count()
 
         self.metrics["successful_trades"] += valid_count
         self.metrics["invalid_trades"] += invalid_count
+        self.metrics["discrepancy_trades"] += discrepancy_count
 
         self.logger.info(f"Validated trades: {valid_count} valid, {invalid_count} invalid")
+        self.logger.info(f"Discrepancy trades: {discrepancy_count} validated trades with discrepancies")
 
         return valid_trades_df, invalid_trades_df
-    
+
     def clean_trades(self, valid_trades_df, invalid_trades_df):
         """
-        Clean and format trades DataFrames to match expected output schemas.
-        
-        For valid trades: Format to match cleaned_trades.json schema
-        For invalid trades: Keep exception_type and details for exceptions_report.json
+        Clean and format trades to match expected output schemas.
+
+        Valid trades -> cleaned_trades.json schema.
+        Invalid trades -> keep exception_type and details for exceptions_report.json.
         """
         self.logger.info("Cleaning trades to match output schemas...")
-        
+
         # Format valid trades to match cleaned_trades.json schema
-        # Normalize timestamp if needed (handle various formats), then format to ISO 8601
+        # Normalize timestamp (various formats) then format to ISO 8601
         cleaned_valid_trades_df = valid_trades_df.withColumn(
             "timestamp_normalized",
             when(
-                col("timestamp").rlike(r'^\d{4}-\d{2}-\d{2}T'),
-                to_timestamp(col("timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
-            ).when(
-                col("timestamp").rlike(r'^\d{10}$'),
-                to_timestamp(col("timestamp").cast("long"))
-            ).when(
-                # Handle M/d/yyyy H:mm:ss or M/d/yyyy HH:mm:ss (single or double digit hours)
-                col("timestamp").rlike(r'^\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d{2}'),
-                to_timestamp(col("timestamp"), "M/d/yyyy H:mm:ss")
-            ).otherwise(
-                to_timestamp(col("timestamp"))
+                col("timestamp").rlike(r"^\d{4}-\d{2}-\d{2}T"),
+                to_timestamp(col("timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"),
             )
+            .when(
+                col("timestamp").rlike(r"^\d{10}$"),
+                to_timestamp(col("timestamp").cast("long")),
+            )
+            .when(
+                col("timestamp").rlike(
+                    r"^\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d{2}"
+                ),
+                to_timestamp(col("timestamp"), "M/d/yyyy H:mm:ss"),
+            )
+            .otherwise(to_timestamp(col("timestamp"))),
         ).select(
             col("trade_id").alias("trade_id"),
             # Format timestamp to ISO 8601 string
-            date_format(col("timestamp_normalized"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").alias("timestamp_utc"),
+            date_format(
+                col("timestamp_normalized"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+            ).alias("timestamp_utc"),
             col("symbol").alias("symbol"),
-            # Use validated integer quantity
             col("trade_quantity_int").alias("quantity"),
-            # Round price to configured decimal places
             spark_round(
                 col("trade_price_dec"),
                 self.config["validation"]["price_decimal_places"],
@@ -306,78 +328,75 @@ class ETLPipeline:
             col("buyer_id").alias("buyer_id"),
             col("seller_id").alias("seller_id"),
             col("counterparty_confirmed").alias("counterparty_confirmed"),
-            col("discrepancy_flag").alias("discrepancy_flag")
+            col("discrepancy_flag").alias("discrepancy_flag"),
         )
-        
-        # For invalid trades, keep exception_type and details for exceptions report
-        # We'll format this properly when building the exceptions report
+
         cleaned_invalid_trades_df = invalid_trades_df
-        
+
         valid_count = cleaned_valid_trades_df.count()
         invalid_count = cleaned_invalid_trades_df.count()
-        
-        self.logger.info(f"Cleaned {valid_count} valid trades and {invalid_count} invalid trades")
-        
-        return cleaned_valid_trades_df, cleaned_invalid_trades_df
-    
-    def transform(self, trades_df, counterparty_df, symbols_df):
-        # Run all transform steps on extracted data
+        self.logger.info(
+            f"Cleaned {valid_count} valid trades and {invalid_count} invalid trades"
+        )
 
-        # Identify and filter duplicate/cancelled trades.
-        filtered_trades_df, filtered_trades_count = self.filter_duplicate_and_cancelled(trades_df)
-        
-        # Join remaining trades with symbols and counterparty fills to create an enriched dataframe.
+        return cleaned_valid_trades_df, cleaned_invalid_trades_df
+
+    def transform(self, trades_df, counterparty_df, symbols_df):
+        """Run all transform steps on extracted data."""
+        filtered_trades_df, _ = self.filter_duplicate_and_cancelled(trades_df)
+
         self.logger.info("Enriching trades with symbol and counterparty data...")
-        enriched_trades_df = filtered_trades_df \
-            .join(counterparty_df, filtered_trades_df["trade_id"] == counterparty_df["our_trade_id"], "left") \
+        enriched_trades_df = (
+            filtered_trades_df
+            .join(
+                counterparty_df,
+                filtered_trades_df["trade_id"] == counterparty_df["our_trade_id"],
+                "left",
+            )
             .join(symbols_df, "symbol", "left")
+        )
         self.logger.info("Enrichment complete.")
 
-        # Validate remaining trades against existing symbols and with quantity/price accuracy.
         valid_trades_df, invalid_trades_df = self.validate_trades(enriched_trades_df)
-
-        # Clean trades dataframes to match desired output schema.
-        cleaned_valid_trades_df, cleaned_invalid_trades_df = self.clean_trades(valid_trades_df, invalid_trades_df)
+        cleaned_valid_trades_df, cleaned_invalid_trades_df = self.clean_trades(
+            valid_trades_df, invalid_trades_df
+        )
 
         return cleaned_valid_trades_df, cleaned_invalid_trades_df
-    
+
     def load(self, valid_trades_df, invalid_trades_df):
         """
         Load cleaned trades and exceptions to output files.
-        
-        Writes:
-        - valid_trades_df to cleaned_trades.json (matches cleaned_trades.json schema)
-        - invalid_trades_df to exceptions_report.json (matches exceptions_report.json schema)
+
+        Writes valid_trades_df to cleaned_trades_path and invalid_trades_df
+        (as exceptions) to exceptions_report_path.
         """
         self.logger.info("Loading output files...")
 
-        # Helper: write a DataFrame as a single pretty-printed JSON file
         def _write_single_json(df, output_path: str) -> int:
             records = [json.loads(r) for r in df.toJSON().collect()]
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(records, f, indent=2)
             return len(records)
-        
-        # Write cleaned trades as a single JSON file
+
         cleaned_trades_path = self.config["output"]["cleaned_trades_path"]
         valid_count = valid_trades_df.count()
-        
+
         if valid_count > 0:
             written_valid = _write_single_json(valid_trades_df, cleaned_trades_path)
             self.logger.info(f"Wrote {written_valid} cleaned trades to {cleaned_trades_path}")
         else:
-            self.logger.warning(f"No valid trades to write to {cleaned_trades_path}")
-        
-        # Format invalid trades to match exceptions_report.json schema
+            self.logger.warning(
+                f"No valid trades to write to {cleaned_trades_path}"
+            )
+
         invalid_count = invalid_trades_df.count()
-        
         if invalid_count > 0:
             exceptions_df = invalid_trades_df.select(
                 col("trade_id").alias("record_id"),
                 lit("trades.csv").alias("source_file"),
                 col("exception_type").alias("exception_type"),
                 col("details").alias("details"),
-                # Create raw_data object with original trade fields
                 struct(
                     col("trade_id"),
                     col("timestamp"),
@@ -389,33 +408,33 @@ class ETLPipeline:
                     col("trade_status"),
                 ).alias("raw_data"),
             )
-            
             exceptions_report_path = self.config["output"]["exceptions_report_path"]
-            written_invalid = _write_single_json(exceptions_df, exceptions_report_path)
-            self.logger.info(f"Wrote {written_invalid} exceptions to {exceptions_report_path}")
+            written_invalid = _write_single_json(
+                exceptions_df, exceptions_report_path
+            )
+            self.logger.info(
+                f"Wrote {written_invalid} exceptions to {exceptions_report_path}"
+            )
         else:
-            self.logger.info("No exceptions to write - all trades passed validation")
-    
+            self.logger.info(
+                "No exceptions to write - all trades passed validation"
+            )
+
     def run(self):
-        # Execute the complete ETL pipeline
-        
+        """Execute the complete ETL pipeline."""
         try:
             self.logger.info("Starting ETL Pipeline execution...")
-            
-            # Extract
-            trades_df, counterparty_df, symbols_df = self.extract()
-            
-            # Transform
-            valid_trades_df, invalid_trades_df = self.transform(trades_df, counterparty_df, symbols_df)
 
-            # Load
+            trades_df, counterparty_df, symbols_df = self.extract()
+            valid_trades_df, invalid_trades_df = self.transform(
+                trades_df, counterparty_df, symbols_df
+            )
             self.load(valid_trades_df, invalid_trades_df)
-            
+
             self.logger.info(
                 "ETL Pipeline completed successfully. Metrics: %s",
                 self.metrics,
             )
-            
         except Exception as e:
             self.logger.error(f"ETL Pipeline failed with error: {str(e)}", exc_info=True)
             raise
