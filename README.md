@@ -1,6 +1,27 @@
 # onechronos-etl-takehome
 Take-home challenge for ETL Engineer interview opportunity.
 
+## Functionality
+
+The pipeline is a **PySpark** ETL that reads trade and counterparty CSVs, validates and enriches them, and writes cleaned trades and an exceptions report as single multiline JSON files.
+
+**Key components**
+
+- **Configuration** (`config.yaml`): Validation rules (e.g. price discrepancy threshold, decimal places), data-quality toggles (filter cancelled, filter duplicates, normalize timestamps), and output paths. No logic changes required for threshold or path updates.
+- **Extract**: Loads `trades.csv`, `counterparty_fills.csv`, and `symbols_reference.csv` with header and consistent column naming for counterparty fields.
+- **Transform**:
+  - **Filter**: Removes duplicate trades (by `trade_id`) and optionally cancelled trades, with metrics computed by subtraction (no extra filter scans).
+  - **Enrich**: Left-joins trades to counterparty fills (on `trade_id` ↔ `our_trade_id`) and to symbol reference (on `symbol`).
+  - **Validate**: Runs separate validity checks (symbol in reference and active, quantity/price numeric and positive), stores results in exception arrays, then derives `exception_type` and `details` by joining array elements with delimiters. Validity is “all checks pass” (empty exception array). Discrepancy vs counterparty (price, quantity, symbol) is flagged using the configured threshold.
+  - **Clean**: Normalizes timestamps (ISO 8601, Unix, `M/d/yyyy H:mm:ss`), rounds prices to configured decimal places, and selects the output schema for cleaned trades.
+- **Load**: Writes one multiline JSON file per output (no Spark partition directories): `cleaned_trades.json` (valid trades) and `exceptions_report.json` (invalid trades with `record_id`, `source_file`, `exception_type`, `details`, `raw_data`).
+
+**Design decisions**
+
+- **Spark in local mode** with driver bound to localhost so the job runs without network.
+- **Scalable validation** via joins and array operations (e.g. `array_append`, `array_join`) instead of collecting lists to the driver.
+- **Metrics** (processed, successful, cancelled, duplicate, invalid, discrepancy) updated by counting before/after steps where possible to avoid extra passes over the data.
+
 ## Installation and Setup
 
 ### Prerequisites
