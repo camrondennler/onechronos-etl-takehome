@@ -1,8 +1,100 @@
 # onechronos-etl-takehome
 Take-home challenge for ETL Engineer interview opportunity.
 
-# ETL Engineer
-## Coding Take-Home Challenge
+## Installation and Setup
+
+### Prerequisites
+- Python 3.8 or higher
+- Java 21 (required for PySpark and Hadoop compatibility)
+
+### Installing Java 21 and Setting `JAVA_HOME`
+
+On macOS using Homebrew:
+
+```bash
+brew install openjdk@21
+
+# Add the following to your shell profile (e.g. ~/.zshrc or ~/.bashrc)
+echo 'export JAVA_HOME="$(/usr/libexec/java_home -v 21)"' >> ~/.zshrc
+echo 'export PATH="$JAVA_HOME/bin:$PATH"' >> ~/.zshrc
+
+# Reload your shell
+source ~/.zshrc
+```
+
+On Linux (using a Debian/Ubuntu-based distribution):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y openjdk-21-jdk
+
+echo 'export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> ~/.bashrc
+echo 'export PATH="$JAVA_HOME/bin:$PATH"' >> ~/.bashrc
+
+source ~/.bashrc
+```
+
+On Windows (PowerShell, after installing a Java 21 JDK such as Temurin):
+
+1. Install a Java 21 JDK (e.g. Temurin 21) from the vendor's website.
+2. Set environment variables:
+   - `JAVA_HOME` to the JDK install directory (e.g. `C:\Program Files\Eclipse Adoptium\jdk-21.x.x`)
+   - Add `%JAVA_HOME%\bin` to the `Path` environment variable.
+
+You can verify the installation with:
+
+```bash
+java -version
+echo $JAVA_HOME  # on macOS/Linux
+```
+
+### Setup Instructions
+
+1. **Create a Python Virtual Environment**
+   ```bash
+   python3 -m venv venv
+   ```
+
+2. **Activate the Virtual Environment**
+   
+   On macOS/Linux:
+   ```bash
+   source venv/bin/activate
+   ```
+   
+   On Windows:
+   ```bash
+   venv\Scripts\activate
+   ```
+
+3. **Install Dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+### Running the Pipeline
+
+Once the virtual environment is activated and dependencies are installed, run the ETL pipeline:
+
+```bash
+python etl_pipeline.py
+```
+
+The pipeline will:
+- Read configuration from `config.yaml`
+- Process the input CSV files (`trades.csv`, `counterparty_fills.csv`, `symbols_reference.csv`)
+- Generate output files (`cleaned_trades.json`, `exceptions_report.json`)
+
+### Deactivating the Virtual Environment
+
+When you're done working, deactivate the virtual environment:
+
+```bash
+deactivate
+```
+
+# Initially Provided Requirements
+## ETL Engineer Coding Take-Home Challenge
 ### Background
 Our dark pool exchange processes millions of trades daily. Trade data flows from multiple sources (internal matching engine, regulatory feeds, counterparty systems) and must be cleaned, validated, transformed, and loaded into our data warehouse for compliance reporting, analytics, and reconciliation.
 
