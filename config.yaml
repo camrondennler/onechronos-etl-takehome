@@ -1,0 +1,16 @@
+validation:
+  price_discrepancy_threshold_exclusive: 0.01
+  price_decimal_places: 2
+  
+data_quality:
+  filter_cancelled_trades: true
+  filter_duplicates: true
+  normalize_timestamps: true
+  
+output:
+  cleaned_trades_path: "cleaned_trades.json"
+  exceptions_report_path: "exceptions_report.json"
+  
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
