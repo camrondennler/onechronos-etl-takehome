@@ -44,6 +44,3 @@ spark-warehouse/
 .DS_Store
 Thumbs.db
 
-# Output files (optional - uncomment if you don't want to track output)
-# cleaned_trades.json/
-# exceptions_report.json/
